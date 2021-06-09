@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	uuid "github.com/satori/go.uuid"
 
 	"github.com/smartcontractkit/chainlink/core/store/models"
 
@@ -33,19 +34,25 @@ func (s Spec) Pipeline() (*Pipeline, error) {
 }
 
 type Run struct {
-	ID             int64            `json:"-" gorm:"primary_key"`
+	ID int64 `json:"-" gorm:"primary_key"`
+	// Unfortunate, but we need an UUID to pass through to the external adapter
+	RunID          uuid.UUID        `json:"runId"`
 	PipelineSpecID int32            `json:"-"`
 	PipelineSpec   Spec             `json:"pipelineSpec"`
 	Meta           JSONSerializable `json:"meta"`
 	// The errors are only ever strings
 	// DB example: [null, null, "my error"]
-	Errors RunErrors `json:"errors" gorm:"type:jsonb"`
+	Errors RunErrors        `json:"errors" gorm:"type:jsonb"`
+	Inputs JSONSerializable `json:"inputs" gorm:"type:jsonb"`
 	// The outputs can be anything.
 	// DB example: [1234, {"a": 10}, null]
 	Outputs          JSONSerializable `json:"outputs" gorm:"type:jsonb"`
 	CreatedAt        time.Time        `json:"createdAt"`
 	FinishedAt       *time.Time       `json:"finishedAt"`
 	PipelineTaskRuns []TaskRun        `json:"taskRuns" gorm:"foreignkey:PipelineRunID;->"`
+
+	Async   bool `gorm:"-"`
+	Pending bool `gorm:"-"`
 }
 
 func (Run) TableName() string {
@@ -125,6 +132,8 @@ type TaskRun struct {
 	FinishedAt    *time.Time        `json:"finishedAt"`
 	Index         int32             `json:"index"`
 	DotID         string            `json:"dotId"`
+
+	// State TaskRunState `json:"state"` // TODO: add state (pending/finished)
 }
 
 func (TaskRun) TableName() string {

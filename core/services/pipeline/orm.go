@@ -22,6 +22,9 @@ var (
 
 type ORM interface {
 	CreateSpec(ctx context.Context, tx *gorm.DB, pipeline Pipeline, maxTaskTimeout models.Interval) (int32, error)
+	CreateRun(db *gorm.DB, run *Run) (err error)
+	StoreSuspendedRun(db *gorm.DB, runID int64, trrs []TaskRunResult) (err error)
+	FinishRun(db *gorm.DB, run *Run, trrs []TaskRunResult, saveSuccessfulTaskRuns bool) (err error)
 	InsertFinishedRun(db *gorm.DB, run Run, trrs []TaskRunResult, saveSuccessfulTaskRuns bool) (runID int64, err error)
 	DeleteRunsOlderThan(threshold time.Duration) error
 	FindBridge(name models.TaskType) (models.BridgeType, error)
@@ -75,6 +78,81 @@ func (o *orm) CreateSpec(ctx context.Context, tx *gorm.DB, pipeline Pipeline, ma
 	return spec.ID, errors.WithStack(err)
 }
 
+// InsertRun
+func (o *orm) CreateRun(db *gorm.DB, run *Run) (err error) {
+	if run.CreatedAt.IsZero() {
+		return errors.New("run.CreatedAt must be set")
+	}
+	if err = db.Create(run).Error; err != nil {
+		return errors.Wrap(err, "error inserting finished pipeline_run")
+	}
+	return err
+}
+
+// StoreSuspendedRun
+func (o *orm) StoreSuspendedRun(db *gorm.DB, runID int64, trrs []TaskRunResult) (err error) {
+	return postgres.GormTransactionWithoutContext(db, func(tx *gorm.DB) error {
+		// TODO: if finished, set finished_at on run as well
+
+		// TODO: just merge this into pipeline_runs?
+		sql := `
+		INSERT INTO pipeline_task_runs (pipeline_run_id, type, index, output, error, dot_id, created_at, finished_at)
+		VALUES %s
+		`
+		valueStrings := []string{}
+		valueArgs := []interface{}{}
+		for _, trr := range trrs {
+			valueStrings = append(valueStrings, "(?,?,?,?,?,?,?,?)")
+			valueArgs = append(valueArgs, runID, trr.Task.Type(), trr.Task.OutputIndex(), trr.Result.OutputDB(), trr.Result.ErrorDB(), trr.Task.DotID(), trr.CreatedAt, trr.FinishedAt)
+		}
+
+		/* #nosec G201 */
+		stmt := fmt.Sprintf(sql, strings.Join(valueStrings, ","))
+		return tx.Exec(stmt, valueArgs...).Error
+	})
+}
+
+func (o *orm) FinishRun(db *gorm.DB, run *Run, trrs []TaskRunResult, saveSuccessfulTaskRuns bool) (err error) {
+	if run.CreatedAt.IsZero() {
+		return errors.New("run.CreatedAt must be set")
+	}
+	if run.FinishedAt.IsZero() {
+		return errors.New("run.FinishedAt must be set")
+	}
+	if run.Outputs.Val == nil || len(run.Errors) == 0 {
+		return errors.Errorf("run must have both Outputs and Errors, got Outputs: %#v, Errors: %#v", run.Outputs.Val, run.Errors)
+	}
+	if len(trrs) == 0 && saveSuccessfulTaskRuns {
+		return errors.New("must provide task run results")
+	}
+
+	err = postgres.GormTransactionWithoutContext(db, func(tx *gorm.DB) error {
+		if err := tx.Exec("UPDATE pipeline_task_runs SET finished_at WHERE id = ?", run.ID).Error; err != nil {
+			return errors.Wrap(err, "error updating finished pipeline_run")
+		}
+
+		if !saveSuccessfulTaskRuns && !run.HasErrors() {
+			return nil
+		}
+
+		sql := `
+		INSERT INTO pipeline_task_runs (pipeline_run_id, type, index, output, error, dot_id, created_at, finished_at)
+		VALUES %s
+		`
+		valueStrings := []string{}
+		valueArgs := []interface{}{}
+		for _, trr := range trrs {
+			valueStrings = append(valueStrings, "(?,?,?,?,?,?,?,?)")
+			valueArgs = append(valueArgs, run.ID, trr.Task.Type(), trr.Task.OutputIndex(), trr.Result.OutputDB(), trr.Result.ErrorDB(), trr.Task.DotID(), trr.CreatedAt, trr.FinishedAt)
+		}
+
+		/* #nosec G201 */
+		stmt := fmt.Sprintf(sql, strings.Join(valueStrings, ","))
+		return tx.Exec(stmt, valueArgs...).Error
+	})
+	return err
+}
+
 // If saveSuccessfulTaskRuns = false, we only save errored runs.
 // That way if the job is run frequently (such as OCR) we avoid saving a large number of successful task runs
 // which do not provide much value.
@@ -97,15 +175,14 @@ func (o *orm) InsertFinishedRun(db *gorm.DB, run Run, trrs []TaskRunResult, save
 			return errors.Wrap(err, "error inserting finished pipeline_run")
 		}
 
-		runID = run.ID
 		if !saveSuccessfulTaskRuns && !run.HasErrors() {
 			return nil
 		}
 
 		sql := `
-	INSERT INTO pipeline_task_runs (pipeline_run_id, type, index, output, error, dot_id, created_at, finished_at)
-	VALUES %s
-	`
+		INSERT INTO pipeline_task_runs (pipeline_run_id, type, index, output, error, dot_id, created_at, finished_at)
+		VALUES %s
+		`
 		valueStrings := []string{}
 		valueArgs := []interface{}{}
 		for _, trr := range trrs {
@@ -117,7 +194,7 @@ func (o *orm) InsertFinishedRun(db *gorm.DB, run Run, trrs []TaskRunResult, save
 		stmt := fmt.Sprintf(sql, strings.Join(valueStrings, ","))
 		return tx.Exec(stmt, valueArgs...).Error
 	})
-	return runID, err
+	return run.ID, err
 }
 
 func (o *orm) DeleteRunsOlderThan(threshold time.Duration) error {

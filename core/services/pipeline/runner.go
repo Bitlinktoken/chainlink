@@ -152,14 +152,51 @@ func (r *runner) ExecuteRun(
 	var (
 		startRun = time.Now()
 		run      = Run{
+			PipelineSpec:   spec,
 			PipelineSpecID: spec.ID,
+			Inputs:         JSONSerializable{Val: pipelineInput, Null: false},
 			CreatedAt:      startRun,
 		}
 	)
 
-	pipeline, err := Parse(spec.DotDagSource)
+	scheduler, err := r.run(ctx, &run, pipelineInput, meta, l)
 	if err != nil {
 		return run, nil, err
+	}
+
+	var taskRunResults TaskRunResults
+	for _, result := range scheduler.results {
+		taskRunResults = append(taskRunResults, result)
+	}
+
+	finalResult := taskRunResults.FinalResult()
+	if finalResult.HasErrors() {
+		promPipelineRunErrors.WithLabelValues(fmt.Sprintf("%d", spec.JobID), spec.JobName).Inc()
+	}
+	run.Errors = finalResult.ErrorsDB()
+	run.Outputs = finalResult.OutputsDB()
+
+	now := time.Now()
+	run.FinishedAt = &now
+	runTime := run.FinishedAt.Sub(run.CreatedAt)
+	l.Debugw("Finished all tasks for pipeline run", "specID", spec.ID, "runTime", runTime)
+	promPipelineRunTotalTimeToCompletion.WithLabelValues(fmt.Sprintf("%d", spec.JobID), spec.JobName).Set(float64(runTime))
+
+	return run, taskRunResults, nil
+}
+
+func (r *runner) run(
+	ctx context.Context,
+	run *Run,
+	pipelineInput interface{},
+	meta JSONSerializable,
+	l logger.Logger,
+) (*scheduler, error) {
+	l.Debugw("Initiating tasks for pipeline run of spec", "job ID", run.PipelineSpec.JobID, "job name", run.PipelineSpec.JobName)
+
+	pipeline, err := Parse(run.PipelineSpec.DotDagSource)
+	if err != nil {
+		return nil, err
 	}
 
 	// initialize certain task params
@@ -172,8 +209,18 @@ func (r *runner) ExecuteRun(
 		}
 	}
 
+	// avoid an extra db write if there is no async tasks present
+	// or if this is called from ResumeRun
+	if pipeline.HasAsync() && run.ID == 0 {
+		if err := r.orm.CreateRun(r.orm.DB(), run); err != nil {
+			return nil, err
+		}
+
+		run.Async = true
+	}
+
 	todo := context.TODO()
-	scheduler := newScheduler(todo, pipeline, pipelineInput)
+	scheduler := newScheduler(todo, pipeline, run, pipelineInput)
 	go scheduler.Run()
 
 	for taskRun := range scheduler.taskCh {
@@ -192,33 +239,18 @@ func (r *runner) ExecuteRun(
 					})
 				}
 			}()
-			result := r.executeTaskRun(ctx, spec, taskRun, meta, l)
+			result := r.executeTaskRun(ctx, run.PipelineSpec, taskRun, meta, l)
 
-			logTaskRunToPrometheus(result, spec)
+			logTaskRunToPrometheus(result, run.PipelineSpec)
 
 			scheduler.report(todo, result)
 		}(taskRun)
 	}
 
-	finishRun := time.Now()
-	runTime := finishRun.Sub(startRun)
-	l.Debugw("Finished all tasks for pipeline run", "specID", spec.ID, "runTime", runTime)
-	promPipelineRunTotalTimeToCompletion.WithLabelValues(fmt.Sprintf("%d", spec.JobID), spec.JobName).Set(float64(runTime))
+	// if the run is suspended, awaiting resumption
+	run.Pending = scheduler.pending
 
-	var taskRunResults TaskRunResults
-	for _, result := range scheduler.results {
-		taskRunResults = append(taskRunResults, result)
-	}
-
-	finalResult := taskRunResults.FinalResult()
-	if finalResult.HasErrors() {
-		promPipelineRunErrors.WithLabelValues(fmt.Sprintf("%d", spec.JobID), spec.JobName).Inc()
-	}
-	run.Errors = finalResult.ErrorsDB()
-	run.Outputs = finalResult.OutputsDB()
-	run.FinishedAt = &finishRun
-
-	return run, taskRunResults, err
+	return scheduler, err
 }
 
 func (r *runner) executeTaskRun(ctx context.Context, spec Spec, taskRun *memoryTaskRun, meta JSONSerializable, l logger.Logger) TaskRunResult {
@@ -273,18 +305,57 @@ func logTaskRunToPrometheus(trr TaskRunResult, spec Spec) {
 	promPipelineTasksTotalFinished.WithLabelValues(fmt.Sprintf("%d", spec.JobID), spec.JobName, string(trr.Task.Type()), status).Inc()
 }
 
-// ExecuteAndInsertNewRun executes a run in memory then inserts the finished run/task run records, returning the final result
+// ExecuteAndInsertFinishedRun executes a run in memory then inserts the finished run/task run records, returning the final result
 func (r *runner) ExecuteAndInsertFinishedRun(ctx context.Context, spec Spec, pipelineInput interface{}, meta JSONSerializable, l logger.Logger, saveSuccessfulTaskRuns bool) (runID int64, finalResult FinalResult, err error) {
 	run, trrs, err := r.ExecuteRun(ctx, spec, pipelineInput, meta, l)
 	if err != nil {
-		return run.ID, finalResult, errors.Wrapf(err, "error executing run for spec ID %v", spec.ID)
+		return 0, finalResult, errors.Wrapf(err, "error executing run for spec ID %v", spec.ID)
 	}
-	finalResult = trrs.FinalResult()
-	runID, err = r.orm.InsertFinishedRun(r.orm.DB(), run, trrs, saveSuccessfulTaskRuns)
+
+	if run.Async {
+		if run.Pending {
+			// store the suspended run in the database, await resumption
+
+			// TODO: handle instant continue
+			if err = r.orm.StoreSuspendedRun(r.orm.DB(), run.ID, trrs); err != nil {
+				return run.ID, finalResult, errors.Wrapf(err, "error inserting suspended run for spec ID %v", spec.ID)
+			}
+		} else {
+			finalResult = trrs.FinalResult()
+			// if async, we need to update an existing db row
+			if err = r.orm.FinishRun(r.orm.DB(), &run, trrs, saveSuccessfulTaskRuns); err != nil {
+				return run.ID, finalResult, errors.Wrapf(err, "error inserting finished results for spec ID %v", spec.ID)
+			}
+		}
+		return run.ID, finalResult, nil
+	} else {
+		finalResult = trrs.FinalResult()
+		// else we create a new row
+		if runID, err = r.orm.InsertFinishedRun(r.orm.DB(), run, trrs, saveSuccessfulTaskRuns); err != nil {
+			return runID, finalResult, errors.Wrapf(err, "error inserting finished results for spec ID %v", spec.ID)
+		}
+		return runID, finalResult, nil
+	}
+
+}
+
+func (r *runner) Resume(ctx context.Context, runID int64, l logger.Logger) (run Run, incomplete bool, err error) {
+	run, err = r.orm.FindRun(runID)
+
 	if err != nil {
-		return runID, finalResult, errors.Wrapf(err, "error inserting finished results for spec ID %v", spec.ID)
+		return Run{}, false, err
 	}
-	return runID, finalResult, nil
+	// construct a scheduler with certain results already set
+	// recalculate unfinished dependencies for each task
+	// make sure it doesn't emit from roots, but from tasks that have 0 deps now and aren't in result set
+	// call run
+
+	// TODO: consider how to handle resume where we got back one result but two bridges are pending
+
+	// TODO: meta has to come from somewhere
+	s, err := r.run(ctx, &run, run.Inputs.Val, JSONSerializable{}, l)
+
+	return run, s.pending, err
 }
 
 func (r *runner) InsertFinishedRun(db *gorm.DB, run Run, trrs TaskRunResults, saveSuccessfulTaskRuns bool) (int64, error) {

@@ -18,6 +18,7 @@ type BridgeTask struct {
 	Name              string `json:"name"`
 	RequestData       string `json:"requestData"`
 	IncludeInputAtKey string `json:"includeInputAtKey"`
+	Async             string `json:"async"`
 
 	tx     *gorm.DB
 	config Config
@@ -89,9 +90,14 @@ func (t *BridgeTask) Run(ctx context.Context, vars Vars, meta JSONSerializable, 
 		"url", url.String(),
 	)
 
-	responseBytes, _, elapsed, err := makeHTTPRequest(ctx, "POST", URLParam(url), requestData, allowUnrestrictedNetworkAccess, t.config)
+	responseBytes, headers, elapsed, err := makeHTTPRequest(ctx, "POST", URLParam(url), requestData, allowUnrestrictedNetworkAccess, t.config)
 	if err != nil {
 		return Result{Error: err}
+	}
+
+	// Look for a `pending` flag.
+	if _, ok := headers["X-Chainlink-Pending"]; ok && t.Async == "true" { // TODO: case sensitivity?
+		return Result{Error: errors.New("pending")} // TODO: TEMP
 	}
 
 	// NOTE: We always stringify the response since this is required for all current jobs.
