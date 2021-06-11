@@ -12,6 +12,20 @@ type Service struct {
 	mock.Mock
 }
 
+// Close provides a mock function with given fields:
+func (_m *Service) Close() error {
+	ret := _m.Called()
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func() error); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // CountManagers provides a mock function with given fields:
 func (_m *Service) CountManagers() (int64, error) {
 	ret := _m.Called()
@@ -26,6 +40,27 @@ func (_m *Service) CountManagers() (int64, error) {
 	var r1 error
 	if rf, ok := ret.Get(1).(func() error); ok {
 		r1 = rf()
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// CreateJobProposal provides a mock function with given fields: jp
+func (_m *Service) CreateJobProposal(jp *feeds.JobProposal) (uint, error) {
+	ret := _m.Called(jp)
+
+	var r0 uint
+	if rf, ok := ret.Get(0).(func(*feeds.JobProposal) uint); ok {
+		r0 = rf(jp)
+	} else {
+		r0 = ret.Get(0).(uint)
+	}
+
+	var r1 error
+	if rf, ok := ret.Get(1).(func(*feeds.JobProposal) error); ok {
+		r1 = rf(jp)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -98,4 +133,18 @@ func (_m *Service) RegisterManager(ms *feeds.FeedsManager) (int32, error) {
 	}
 
 	return r0, r1
+}
+
+// Start provides a mock function with given fields:
+func (_m *Service) Start() error {
+	ret := _m.Called()
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func() error); ok {
+		r0 = rf()
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
 }

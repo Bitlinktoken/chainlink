@@ -2,19 +2,25 @@ package feeds
 
 import (
 	"database/sql/driver"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"github.com/smartcontractkit/chainlink/core/utils/crypto"
+)
+
+// We only support OCR and FM for the feeds manager
+const (
+	JobTypeFluxMonitor       = "fluxmonitor"
+	JobTypeOffchainReporting = "offchainreporting"
 )
 
 type FeedsManager struct {
 	ID        int32
 	Name      string
 	URI       string
-	PublicKey PublicKey
+	PublicKey crypto.PublicKey
 	JobTypes  pq.StringArray `gorm:"type:text[]"`
 	Network   string
 	CreatedAt time.Time
@@ -25,63 +31,68 @@ func (FeedsManager) TableName() string {
 	return "feeds_managers"
 }
 
-// We only support OCR and FM for the feeds manager
+// JobProposalStatus are the status codes that define the stage of a proposal
+type JobProposalStatus uint
+
 const (
-	JobTypeFluxMonitor       = "fluxmonitor"
-	JobTypeOffchainReporting = "offchainreporting"
+	JobProposalStatusUnknown JobProposalStatus = iota
+	JobProposalStatusPending
+	JobProposalStatusApproved
+	JobProposalStatusRejected
 )
 
-// PublicKey defines a type which can be used for JSON and SQL.
-type PublicKey []byte
+var _JobProposalStatusValues = [...]string{"unknown", "pending", "approved", "rejected"}
 
-// PublicKeyFromHex generates a public key from a hex string
-func PublicKeyFromHex(hexStr string) (*PublicKey, error) {
-	result, err := hex.DecodeString(hexStr)
-	if err != nil {
-		return nil, err
+func (s JobProposalStatus) String() string {
+	return _JobProposalStatusValues[s]
+}
+
+// JobProposalStatusString retrieves an enum value from the enum constants
+// string name. Throws an error if the param is not part of the enum.
+func JobProposalStatusString(s string) (JobProposalStatus, error) {
+	for i, val := range _JobProposalStatusValues {
+		if s == val {
+			return JobProposalStatus(i), nil
+		}
 	}
 
-	pubKey := PublicKey(result)
-
-	return &pubKey, err
+	return 0, fmt.Errorf("%s does not belong to JobProposalStatus values", s)
 }
 
-func (k PublicKey) String() string {
-	return hex.EncodeToString(k)
+func (s JobProposalStatus) Value() (driver.Value, error) {
+	return s.String(), nil
 }
 
-func (k PublicKey) MarshalJSON() ([]byte, error) {
-	return json.Marshal(hex.EncodeToString(k))
-}
+func (s *JobProposalStatus) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
 
-func (k *PublicKey) UnmarshalJSON(in []byte) error {
-	var hexStr string
-	if err := json.Unmarshal(in, &hexStr); err != nil {
+	str, ok := value.(string)
+	if !ok {
+		bytes, ok := value.([]byte)
+		if !ok {
+			return fmt.Errorf("value is not a byte slice")
+		}
+
+		str = string(bytes[:])
+	}
+
+	val, err := JobProposalStatusString(str)
+	if err != nil {
 		return err
 	}
 
-	result, err := hex.DecodeString(hexStr)
-	if err != nil {
-		return err
-	}
-
-	*k = PublicKey(result)
+	*s = val
 	return nil
 }
 
-func (k *PublicKey) Scan(value interface{}) error {
-	switch v := value.(type) {
-	case nil:
-		*k = nil
-		return nil
-	case []byte:
-		*k = v
-		return nil
-	default:
-		return fmt.Errorf("invalid public key bytes got %T wanted []byte", v)
-	}
-}
-
-func (k PublicKey) Value() (driver.Value, error) {
-	return []byte(k), nil
+type JobProposal struct {
+	ID             uint
+	Spec           string
+	Status         JobProposalStatus
+	JobID          uuid.UUID
+	FeedsManagerID int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }

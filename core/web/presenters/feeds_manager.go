@@ -4,17 +4,18 @@ import (
 	"time"
 
 	"github.com/smartcontractkit/chainlink/core/services/feeds"
+	"github.com/smartcontractkit/chainlink/core/utils/crypto"
 )
 
 // FeedsManagerResource represents a Feeds Manager JSONAPI resource.
 type FeedsManagerResource struct {
 	JAID
-	Name      string          `json:"name"`
-	URI       string          `json:"uri"`
-	PublicKey feeds.PublicKey `json:"publicKey"`
-	JobTypes  []string        `json:"jobTypes"`
-	Network   string          `json:"network"`
-	CreatedAt time.Time       `json:"createdAt"`
+	Name      string           `json:"name"`
+	URI       string           `json:"uri"`
+	PublicKey crypto.PublicKey `json:"publicKey"`
+	JobTypes  []string         `json:"jobTypes"`
+	Network   string           `json:"network"`
+	CreatedAt time.Time        `json:"createdAt"`
 }
 
 // GetName implements the api2go EntityNamer interface
