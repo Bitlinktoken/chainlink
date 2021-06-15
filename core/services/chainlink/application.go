@@ -4,6 +4,7 @@ import (
 	"context"
 	stderr "errors"
 	"fmt"
+	"math/big"
 	"os"
 	"os/signal"
 	"reflect"
@@ -452,6 +453,30 @@ func setupConfig(config *orm.Config, store *strpkg.Store) {
 	}
 }
 
+var ErrNewChainID = errors.New("The ChainID has changed since last run, this is currently not supported")
+
+// Changes to ChainID are not supported, because various records are assumed to
+// represent on chain state.
+func validateCurrentChainID(store *strpkg.Store) error {
+	var currentChainID *big.Int
+	err := store.GetConfigValue("ChainID", currentChainID)
+	if err != nil && errors.Cause(err) != orm.ErrorNotFound {
+		return err
+	}
+
+	chainID := store.Config.ChainID()
+	if currentChainID == nil {
+		err := store.SetConfigValue("ChainID", chainID)
+		if err != nil {
+			return err
+		}
+	} else if chainID != currentChainID {
+		return ErrNewChainID
+	}
+
+	return nil
+}
+
 // Start all necessary services. If successful, nil will be returned.  Also
 // listens for interrupt signals from the operating system so that the
 // application can be properly closed before the application exits.
@@ -483,6 +508,10 @@ func (app *ChainlinkApplication) Start() error {
 	}
 
 	if err := app.RunQueue.Start(); err != nil {
+		return err
+	}
+
+	if err := validateCurrentChainID(app.Store); err != nil {
 		return err
 	}
 
