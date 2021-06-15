@@ -234,7 +234,7 @@ func (r *runner) run(
 					scheduler.report(todo, TaskRunResult{
 						Task:       taskRun.task,
 						Result:     Result{Error: ErrRunPanicked{err}},
-						FinishedAt: t,
+						FinishedAt: &t,
 						CreatedAt:  t, // TODO: more accurate start time
 					})
 				}
@@ -284,11 +284,13 @@ func (r *runner) executeTaskRun(ctx context.Context, spec Spec, taskRun *memoryT
 	}
 	l.Debugw("Pipeline task completed", loggerFields...)
 
+	now := time.Now()
+
 	return TaskRunResult{
 		Task:       taskRun.task,
 		Result:     result,
 		CreatedAt:  start,
-		FinishedAt: time.Now(),
+		FinishedAt: &now,
 	}
 }
 
@@ -345,12 +347,6 @@ func (r *runner) Resume(ctx context.Context, runID int64, l logger.Logger) (run 
 	if err != nil {
 		return Run{}, false, err
 	}
-	// construct a scheduler with certain results already set
-	// recalculate unfinished dependencies for each task
-	// make sure it doesn't emit from roots, but from tasks that have 0 deps now and aren't in result set
-	// call run
-
-	// TODO: consider how to handle resume where we got back one result but two bridges are pending
 
 	// TODO: meta has to come from somewhere
 	s, err := r.run(ctx, &run, run.Inputs.Val, JSONSerializable{}, l)

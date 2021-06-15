@@ -509,7 +509,7 @@ ds5 [type=http method="GET" url="%s" index=2]
 			Error:         trr.Result.ErrorDB(),
 			DotID:         trr.Task.DotID(),
 			CreatedAt:     trr.CreatedAt,
-			FinishedAt:    &trr.FinishedAt,
+			FinishedAt:    trr.FinishedAt,
 		})
 	}
 
@@ -525,7 +525,7 @@ ds5 [type=http method="GET" url="%s" index=2]
 	// Now simulate a new result coming in
 	var index int
 	for i, r := range run.PipelineTaskRuns {
-		if r.Error.String == "pending" {
+		if r.IsPending() {
 			index = i
 		}
 	}
@@ -540,6 +540,7 @@ ds5 [type=http method="GET" url="%s" index=2]
 				},
 			},
 		},
+		Null: false,
 	}
 	run.PipelineTaskRuns[index].Output = &value
 

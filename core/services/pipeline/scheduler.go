@@ -72,9 +72,7 @@ func newScheduler(ctx context.Context, p *Pipeline, run *Run, pipelineInput inte
 			panic("can't find task by dot id")
 		}
 
-		// TODO: properly detect pending mark
-		// if r.FinishedAt is not set, but CreatedAt is, then the task is pending
-		if r.Error.String == "pending" {
+		if r.IsPending() {
 			continue
 		}
 
@@ -144,7 +142,7 @@ Loop:
 						Task:       task,
 						Result:     Result{Error: ErrTimeout},
 						CreatedAt:  now, // TODO: more accurate start time
-						FinishedAt: now,
+						FinishedAt: &now,
 					}
 				}
 			}
@@ -154,23 +152,28 @@ Loop:
 
 		s.waiting--
 
-		// mark job as complete
+		// TODO: this is temporary until task_bridge can return a proper pending result
+		if result.Result.Error != nil && (result.Result.Error.Error() == "pending") {
+			result.Result = Result{} // no output, no error
+			result.FinishedAt = nil  // not finished
+		}
+
+		// store task run
 		s.results[result.Task.ID()] = result
+
+		// catch the pending state, we will keep the pipeline running until no more progress is made
+		if result.IsPending() {
+			s.pending = true
+
+			// skip output wrangling because this task isn't actually complete yet
+			continue
+		}
 
 		// store the result in vars
 		if result.Result.Error != nil {
 			s.vars.Set(result.Task.DotID(), result.Result.Error)
 		} else {
 			s.vars.Set(result.Task.DotID(), result.Result.Value)
-		}
-
-		// TODO:
-		// catch the pending state, we will keep the pipeline running until no more progress is made
-		if result.Result.Error != nil && (result.Result.Error.Error() == "pending") {
-			s.pending = true
-
-			// skip output wrangling because this task isn't actually complete yet
-			continue
 		}
 
 		for _, output := range result.Task.Outputs() {

@@ -167,6 +167,10 @@ func (tr TaskRun) Result() Result {
 	return result
 }
 
+func (tr *TaskRun) IsPending() bool {
+	return tr.FinishedAt == nil && tr.Output.Null && tr.Error.IsZero()
+}
+
 // RunStatus represents the status of a run
 type RunStatus int
 
