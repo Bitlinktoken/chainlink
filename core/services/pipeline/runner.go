@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"sort"
 	"time"
 
 	"github.com/smartcontractkit/chainlink/core/service"
@@ -107,28 +106,8 @@ func (r *runner) runReaperLoop() {
 
 type memoryTaskRun struct {
 	task   Task
-	inputs []input
+	inputs []Result // sorted by input index
 	vars   Vars
-}
-
-// Returns the results sorted by index. It is not thread-safe.
-func (m *memoryTaskRun) inputsSorted() (a []Result) {
-	inputs := make([]input, len(m.inputs))
-	copy(inputs, m.inputs)
-	sort.Slice(inputs, func(i, j int) bool {
-		return inputs[i].index < inputs[j].index
-	})
-	a = make([]Result, len(inputs))
-	for i, input := range inputs {
-		a[i] = input.result
-	}
-
-	return
-}
-
-type input struct {
-	result Result
-	index  int32
 }
 
 // When a task panics, we catch the panic and wrap it in an error for reporting to the scheduler.
@@ -274,7 +253,7 @@ func (r *runner) executeTaskRun(ctx context.Context, spec Spec, taskRun *memoryT
 		defer cancel()
 	}
 
-	result := taskRun.task.Run(ctx, taskRun.vars, meta, taskRun.inputsSorted())
+	result := taskRun.task.Run(ctx, taskRun.vars, meta, taskRun.inputs)
 	loggerFields = append(loggerFields, "result value", result.Value)
 	loggerFields = append(loggerFields, "result error", result.Error)
 	switch v := result.Value.(type) {

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/pkg/errors"
@@ -14,10 +15,25 @@ func (s *scheduler) newMemoryTaskRun(task Task) *memoryTaskRun {
 	// fill in the inputs
 	if len(task.Inputs()) == 0 {
 		// roots receive pipeline inputs
-		run.inputs = append(run.inputs, input{index: 0, result: Result{Value: s.input}})
+		run.inputs = append(run.inputs, Result{Value: s.input})
 	} else {
+		// construct a list of inputs, sorted by OutputIndex
+		type input struct {
+			index  int32
+			result Result
+		}
+		inputs := make([]input, 0, len(task.Inputs()))
+		// TODO: we could just allocate via make, then assign directly to run.inputs[i.OutputIndex()]
+		// if we're confident that indices are within range
 		for _, i := range task.Inputs() {
-			run.inputs = append(run.inputs, input{index: int32(i.OutputIndex()), result: s.results[i.ID()].Result})
+			inputs = append(inputs, input{index: int32(i.OutputIndex()), result: s.results[i.ID()].Result})
+		}
+		sort.Slice(inputs, func(i, j int) bool {
+			return inputs[i].index < inputs[j].index
+		})
+		run.inputs = make([]Result, len(inputs))
+		for i, input := range inputs {
+			run.inputs[i] = input.result
 		}
 	}
 
