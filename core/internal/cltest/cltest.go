@@ -1693,6 +1693,14 @@ func NewAwaiter() Awaiter { return make(Awaiter) }
 
 func (a Awaiter) ItHappened() { close(a) }
 
+func (a Awaiter) AssertHappened(t *testing.T) {
+	select {
+	case <-a:
+	default:
+		t.Fatal("It didn't happen")
+	}
+}
+
 func (a Awaiter) AwaitOrFail(t testing.TB, durationParams ...time.Duration) {
 	t.Helper()
 
