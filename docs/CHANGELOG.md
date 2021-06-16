@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- If the ETH_CHAIN_ID is changed between successive invocations of the Chainlink Node, it will abort. We cannot currently support this scenario as the Chainlink Node only persists state about the chain it was connected to.
+
 - INSECURE_SKIP_VERIFY configuration variable disables verification of the Chainlink SSL certificates when using the CLI.
 
 - JSON parse tasks (v2) now permit an empty `path` parameter.
