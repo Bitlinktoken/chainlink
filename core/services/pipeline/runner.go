@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	uuid "github.com/satori/go.uuid"
 	"github.com/smartcontractkit/chainlink/core/service"
 	"github.com/smartcontractkit/chainlink/core/store/models"
 
@@ -185,6 +186,7 @@ func (r *runner) run(
 		} else if task.Type() == TaskTypeBridge {
 			task.(*BridgeTask).config = r.config
 			task.(*BridgeTask).tx = r.orm.DB()
+			task.(*BridgeTask).id = uuid.NewV4()
 		}
 	}
 
@@ -211,6 +213,7 @@ func (r *runner) run(
 
 					t := time.Now()
 					scheduler.report(todo, TaskRunResult{
+						ID:         uuid.NewV4(),
 						Task:       taskRun.task,
 						Result:     Result{Error: ErrRunPanicked{err}},
 						FinishedAt: &t,
@@ -265,7 +268,15 @@ func (r *runner) executeTaskRun(ctx context.Context, spec Spec, taskRun *memoryT
 
 	now := time.Now()
 
+	var id uuid.UUID
+	if taskRun.task.Type() == TaskTypeBridge {
+		id = taskRun.task.(*BridgeTask).id
+	} else {
+		id = uuid.NewV4()
+	}
+
 	return TaskRunResult{
+		ID:         id,
 		Task:       taskRun.task,
 		Result:     result,
 		CreatedAt:  start,

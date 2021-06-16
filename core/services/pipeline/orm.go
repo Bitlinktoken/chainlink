@@ -101,14 +101,14 @@ func (o *orm) StoreSuspendedRun(db *gorm.DB, runID int64, trrs []TaskRunResult) 
 		// o.db.DB() to access raw db
 
 		sql = `
-		INSERT INTO pipeline_task_runs (pipeline_run_id, type, index, output, error, dot_id, created_at, finished_at)
+		INSERT INTO pipeline_task_runs (pipeline_run_id, run_id, type, index, output, error, dot_id, created_at, finished_at)
 		VALUES %s
 		`
 		valueStrings := []string{}
 		valueArgs := []interface{}{}
 		for _, trr := range trrs {
 			valueStrings = append(valueStrings, "(?,?,?,?,?,?,?,?)")
-			valueArgs = append(valueArgs, runID, trr.Task.Type(), trr.Task.OutputIndex(), trr.Result.OutputDB(), trr.Result.ErrorDB(), trr.Task.DotID(), trr.CreatedAt, trr.FinishedAt)
+			valueArgs = append(valueArgs, runID, trr.ID, trr.Task.Type(), trr.Task.OutputIndex(), trr.Result.OutputDB(), trr.Result.ErrorDB(), trr.Task.DotID(), trr.CreatedAt, trr.FinishedAt)
 		}
 
 		/* #nosec G201 */

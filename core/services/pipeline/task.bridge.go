@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/pkg/errors"
+	uuid "github.com/satori/go.uuid"
 	"go.uber.org/multierr"
 	"gorm.io/gorm"
 
@@ -22,6 +23,7 @@ type BridgeTask struct {
 
 	tx     *gorm.DB
 	config Config
+	id     uuid.UUID
 }
 
 var _ Task = (*BridgeTask)(nil)
@@ -67,6 +69,7 @@ func (t *BridgeTask) Run(ctx context.Context, vars Vars, meta JSONSerializable, 
 		)
 	}
 
+	// TODO: pass t.id on the meta key? or where?
 	requestData = withMeta(requestData, metaMap)
 	if t.IncludeInputAtKey != "" {
 		logger.Warnw(`The "includeInputAtKey" parameter on Bridge tasks is deprecated. Please migrate to variable interpolation syntax as soon as possible (see CHANGELOG).`,

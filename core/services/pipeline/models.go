@@ -34,9 +34,7 @@ func (s Spec) Pipeline() (*Pipeline, error) {
 }
 
 type Run struct {
-	ID int64 `json:"-" gorm:"primary_key"`
-	// Unfortunate, but we need an UUID to pass through to the external adapter
-	RunID          uuid.UUID        `json:"runId"`
+	ID             int64            `json:"-" gorm:"primary_key"`
 	PipelineSpecID int32            `json:"-"`
 	PipelineSpec   Spec             `json:"pipelineSpec"`
 	Meta           JSONSerializable `json:"meta"`
@@ -133,6 +131,8 @@ type TaskRun struct {
 	Index         int32             `json:"index"`
 	DotID         string            `json:"dotId"`
 
+	// Unfortunate, but we need an UUID to pass through to the external adapter
+	RunID uuid.UUID `json:"runId"`
 	// State TaskRunState `json:"state"` // TODO: add state (pending/finished)
 }
 
