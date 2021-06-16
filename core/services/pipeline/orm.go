@@ -92,10 +92,15 @@ func (o *orm) CreateRun(db *gorm.DB, run *Run) (err error) {
 // StoreSuspendedRun
 func (o *orm) StoreSuspendedRun(db *gorm.DB, runID int64, trrs []TaskRunResult) (err error) {
 	return postgres.GormTransactionWithoutContext(db, func(tx *gorm.DB) error {
-		// TODO: if finished, set finished_at on run as well
+		// Lock the current run. This prevents races with /v2/resume
+		sql := `SELECT id FROM pipeline_runs WHERE id = ? FOR UPDATE;`
+		if err := tx.Exec(sql, runID).Error; err != nil {
+			return err
+		}
 
-		// TODO: just merge this into pipeline_runs?
-		sql := `
+		// o.db.DB() to access raw db
+
+		sql = `
 		INSERT INTO pipeline_task_runs (pipeline_run_id, type, index, output, error, dot_id, created_at, finished_at)
 		VALUES %s
 		`
