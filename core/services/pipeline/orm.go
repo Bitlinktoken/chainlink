@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -13,6 +15,37 @@ import (
 	"github.com/smartcontractkit/chainlink/core/store/models"
 	"gorm.io/gorm"
 )
+
+// CamelToSnakeASCII converts camel case strings to snake case. For performance
+// reasons it only works with ASCII strings.
+func CamelToSnakeASCII(s string) string {
+	buf := []byte(s)
+	out := make([]byte, 0, len(buf)+3)
+
+	l := len(buf)
+	for i := 0; i < l; i++ {
+		if !(allowedBindRune(buf[i]) || buf[i] == '_') {
+			panic(fmt.Sprint("not allowed name ", s))
+		}
+
+		b := rune(buf[i])
+
+		if unicode.IsUpper(b) {
+			if i > 0 && buf[i-1] != '_' && (unicode.IsLower(rune(buf[i-1])) || (i+1 < l && unicode.IsLower(rune(buf[i+1])))) {
+				out = append(out, '_')
+			}
+			b = unicode.ToLower(b)
+		}
+
+		out = append(out, byte(b))
+	}
+
+	return string(out)
+}
+
+func allowedBindRune(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
 
 var (
 	ErrNoSuchBridge = errors.New("no such bridge exists")
@@ -23,8 +56,7 @@ var (
 type ORM interface {
 	CreateSpec(ctx context.Context, tx *gorm.DB, pipeline Pipeline, maxTaskTimeout models.Interval) (int32, error)
 	CreateRun(db *gorm.DB, run *Run) (err error)
-	StoreSuspendedRun(db *gorm.DB, runID int64, trrs []TaskRunResult) (err error)
-	FinishRun(db *gorm.DB, run *Run, trrs []TaskRunResult, saveSuccessfulTaskRuns bool) (err error)
+	StoreRun(db *gorm.DB, run *Run, trrs []TaskRunResult, saveSuccessfulTaskRuns bool) (err error)
 	InsertFinishedRun(db *gorm.DB, run Run, trrs []TaskRunResult, saveSuccessfulTaskRuns bool) (runID int64, err error)
 	DeleteRunsOlderThan(threshold time.Duration) error
 	FindBridge(name models.TaskType) (models.BridgeType, error)
@@ -89,73 +121,101 @@ func (o *orm) CreateRun(db *gorm.DB, run *Run) (err error) {
 	return err
 }
 
-// StoreSuspendedRun
-func (o *orm) StoreSuspendedRun(db *gorm.DB, runID int64, trrs []TaskRunResult) (err error) {
+// StoreRun
+func (o *orm) StoreRun(db *gorm.DB, run *Run, trrs []TaskRunResult, saveSuccessfulTaskRuns bool) (err error) {
+	finished := run.FinishedAt != nil
 	return postgres.GormTransactionWithoutContext(db, func(tx *gorm.DB) error {
-		// Lock the current run. This prevents races with /v2/resume
-		sql := `SELECT id FROM pipeline_runs WHERE id = ? FOR UPDATE;`
-		if err := tx.Exec(sql, runID).Error; err != nil {
+		// wrapper to sqlx
+		raw_db, err := tx.DB()
+		if err != nil {
 			return err
 		}
+		db := sqlx.NewDb(raw_db, "postgres")
+		db.MapperFunc(CamelToSnakeASCII)
 
-		// o.db.DB() to access raw db
+		if !finished {
+			// Lock the current run. This prevents races with /v2/resume
+			sql := `SELECT id FROM pipeline_runs WHERE id = $1 FOR UPDATE;`
+			if _, err := db.Exec(sql, run.ID); err != nil {
+				return err
+			}
 
-		sql = `
-		INSERT INTO pipeline_task_runs (pipeline_run_id, run_id, type, index, output, error, dot_id, created_at, finished_at)
-		VALUES %s
-		`
-		valueStrings := []string{}
-		valueArgs := []interface{}{}
-		for _, trr := range trrs {
-			valueStrings = append(valueStrings, "(?,?,?,?,?,?,?,?)")
-			valueArgs = append(valueArgs, runID, trr.ID, trr.Task.Type(), trr.Task.OutputIndex(), trr.Result.OutputDB(), trr.Result.ErrorDB(), trr.Task.DotID(), trr.CreatedAt, trr.FinishedAt)
+			// Reload task runs, we want to check for any changes while the run was ongoing
+			rows, err := db.Queryx(`SELECT * FROM pipeline_task_runs WHERE pipeline_run_id = $1`, run.ID)
+			if err != nil {
+				return err
+			}
+			taskRuns := []TaskRun{}
+			if err := sqlx.StructScan(rows, &taskRuns); err != nil {
+				return err
+			}
+
+			// diff with current state, if updated, swap run.PipelineTaskRuns and early return with restart = true
+			var updated bool
+			for _, trr := range trrs {
+				if !trr.IsPending() {
+					continue
+				}
+
+				// find the equivalent in taskRuns
+			}
+
+			if updated {
+				run.PipelineTaskRuns = taskRuns
+				// TODO: return restart flag
+				return nil
+			}
+		} else {
+			// simply finish the run, no need to do any sort of locking
+			if run.Outputs.Val == nil || len(run.Errors) == 0 {
+				return errors.Errorf("run must have both Outputs and Errors, got Outputs: %#v, Errors: %#v", run.Outputs.Val, run.Errors)
+			}
+
+			// TODO: this won't work if CreateRun() hasn't executed before, needs to be an upsert?
+			if _, err := db.NamedExec(`UPDATE pipeline_runs SET finished_at = :finished_at, errors= :errors, outputs = :outputs WHERE id = :id`, run); err != nil {
+				return err
+			}
 		}
 
-		/* #nosec G201 */
-		stmt := fmt.Sprintf(sql, strings.Join(valueStrings, ","))
-		return tx.Exec(stmt, valueArgs...).Error
-	})
-}
-
-func (o *orm) FinishRun(db *gorm.DB, run *Run, trrs []TaskRunResult, saveSuccessfulTaskRuns bool) (err error) {
-	if run.CreatedAt.IsZero() {
-		return errors.New("run.CreatedAt must be set")
-	}
-	if run.FinishedAt.IsZero() {
-		return errors.New("run.FinishedAt must be set")
-	}
-	if run.Outputs.Val == nil || len(run.Errors) == 0 {
-		return errors.Errorf("run must have both Outputs and Errors, got Outputs: %#v, Errors: %#v", run.Outputs.Val, run.Errors)
-	}
-	if len(trrs) == 0 && saveSuccessfulTaskRuns {
-		return errors.New("must provide task run results")
-	}
-
-	err = postgres.GormTransactionWithoutContext(db, func(tx *gorm.DB) error {
-		if err := tx.Exec("UPDATE pipeline_task_runs SET finished_at WHERE id = ?", run.ID).Error; err != nil {
-			return errors.Wrap(err, "error updating finished pipeline_run")
-		}
-
-		if !saveSuccessfulTaskRuns && !run.HasErrors() {
+		if !saveSuccessfulTaskRuns && !run.HasErrors() && finished {
 			return nil
 		}
 
 		sql := `
-		INSERT INTO pipeline_task_runs (pipeline_run_id, type, index, output, error, dot_id, created_at, finished_at)
-		VALUES %s
+		INSERT INTO pipeline_task_runs (pipeline_run_id, run_id, type, index, output, error, dot_id, created_at, finished_at)
+		VALUES (:pipeline_run_id, :run_id, :type, :index, :output, :error, :dot_id, :created_at, :finished_at)
+		ON CONFLICT (run_id) DO UPDATE SET
+		output = EXCLUDED.output, error = EXCLUDED.error, finished_at = EXCLUDED.finished_at
+		RETURNING *;
 		`
-		valueStrings := []string{}
-		valueArgs := []interface{}{}
+		values := []TaskRun{}
 		for _, trr := range trrs {
-			valueStrings = append(valueStrings, "(?,?,?,?,?,?,?,?)")
-			valueArgs = append(valueArgs, run.ID, trr.Task.Type(), trr.Task.OutputIndex(), trr.Result.OutputDB(), trr.Result.ErrorDB(), trr.Task.DotID(), trr.CreatedAt, trr.FinishedAt)
+			output := trr.Result.OutputDB()
+			values = append(values, TaskRun{
+				PipelineRunID: run.ID,
+				RunID:         trr.ID,
+				Type:          trr.Task.Type(),
+				Index:         trr.Task.OutputIndex(),
+				Output:        &output,
+				Error:         trr.Result.ErrorDB(),
+				DotID:         trr.Task.DotID(),
+				CreatedAt:     trr.CreatedAt,
+				FinishedAt:    trr.FinishedAt,
+			})
 		}
 
-		/* #nosec G201 */
-		stmt := fmt.Sprintf(sql, strings.Join(valueStrings, ","))
-		return tx.Exec(stmt, valueArgs...).Error
+		rows, err := db.NamedQuery(sql, values)
+		if err != nil {
+			return err
+		}
+		taskRuns := []TaskRun{}
+		if err := sqlx.StructScan(rows, &taskRuns); err != nil {
+			return err
+		}
+		// replace with new task run data
+		run.PipelineTaskRuns = taskRuns
+		return nil
 	})
-	return err
 }
 
 // If saveSuccessfulTaskRuns = false, we only save errored runs.

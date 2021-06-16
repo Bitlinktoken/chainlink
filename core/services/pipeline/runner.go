@@ -190,8 +190,7 @@ func (r *runner) run(
 		}
 	}
 
-	// avoid an extra db write if there is no async tasks present
-	// or if this is called from ResumeRun
+	// avoid an extra db write if there is no async tasks present or if this is a resumed run
 	if pipeline.HasAsync() && run.ID == 0 {
 		if err := r.orm.CreateRun(r.orm.DB(), run); err != nil {
 			return nil, err
@@ -305,19 +304,13 @@ func (r *runner) ExecuteAndInsertFinishedRun(ctx context.Context, spec Spec, pip
 	}
 
 	if run.Async {
-		if run.Pending {
-			// store the suspended run in the database, await resumption
-
-			// TODO: handle instant continue
-			if err = r.orm.StoreSuspendedRun(r.orm.DB(), run.ID, trrs); err != nil {
-				return run.ID, finalResult, errors.Wrapf(err, "error inserting suspended run for spec ID %v", spec.ID)
-			}
-		} else {
+		if !run.Pending {
 			finalResult = trrs.FinalResult()
-			// if async, we need to update an existing db row
-			if err = r.orm.FinishRun(r.orm.DB(), &run, trrs, saveSuccessfulTaskRuns); err != nil {
-				return run.ID, finalResult, errors.Wrapf(err, "error inserting finished results for spec ID %v", spec.ID)
-			}
+		}
+
+		// TODO: handle instant continue
+		if err = r.orm.StoreRun(r.orm.DB(), &run, trrs, saveSuccessfulTaskRuns); err != nil {
+			return run.ID, finalResult, errors.Wrapf(err, "error inserting suspended run for spec ID %v", spec.ID)
 		}
 		return run.ID, finalResult, nil
 	} else {
@@ -333,6 +326,7 @@ func (r *runner) ExecuteAndInsertFinishedRun(ctx context.Context, spec Spec, pip
 
 func (r *runner) Resume(ctx context.Context, runID int64, l logger.Logger) (run Run, incomplete bool, err error) {
 	run, err = r.orm.FindRun(runID)
+	// TODO: ensure this has task runs present
 
 	if err != nil {
 		return Run{}, false, err

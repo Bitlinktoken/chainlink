@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	uuid "github.com/satori/go.uuid"
 	"github.com/smartcontractkit/chainlink/core/internal/cltest"
 	"github.com/smartcontractkit/chainlink/core/services/pipeline"
 	"github.com/stretchr/testify/require"
@@ -26,7 +27,7 @@ func Test_PipelineORM_FindRun(t *testing.T) {
 	require.Equal(t, expected.ID, run.ID)
 }
 
-func Test_PipelineORM_StoreSuspendedRun(t *testing.T) {
+func Test_PipelineORM_StoreRun(t *testing.T) {
 	store, cleanup := cltest.NewStore(t)
 	defer cleanup()
 	db := store.DB
@@ -62,9 +63,10 @@ answer2 [type=bridge name=election_winner index=1];
 
 	now := time.Now()
 
-	err = orm.StoreSuspendedRun(db, run.ID, []pipeline.TaskRunResult{
+	err = orm.StoreRun(db, run, []pipeline.TaskRunResult{
 		// pending task
 		pipeline.TaskRunResult{
+			ID:         uuid.NewV4(),
 			Task:       p.ByDotID("ds1"),
 			Result:     pipeline.Result{},
 			CreatedAt:  now,
@@ -72,12 +74,13 @@ answer2 [type=bridge name=election_winner index=1];
 		},
 		// finished task
 		pipeline.TaskRunResult{
+			ID:         uuid.NewV4(),
 			Task:       p.ByDotID("answer2"),
 			Result:     pipeline.Result{Value: 1},
 			CreatedAt:  now,
 			FinishedAt: &now,
 		},
-	})
+	}, true)
 	require.NoError(t, err)
 
 	r, err := orm.FindRun(run.ID)

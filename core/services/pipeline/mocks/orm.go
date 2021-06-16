@@ -128,20 +128,6 @@ func (_m *ORM) FindRun(id int64) (pipeline.Run, error) {
 	return r0, r1
 }
 
-// FinishRun provides a mock function with given fields: db, run, trrs, saveSuccessfulTaskRuns
-func (_m *ORM) FinishRun(db *gorm.DB, run *pipeline.Run, trrs []pipeline.TaskRunResult, saveSuccessfulTaskRuns bool) error {
-	ret := _m.Called(db, run, trrs, saveSuccessfulTaskRuns)
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(*gorm.DB, *pipeline.Run, []pipeline.TaskRunResult, bool) error); ok {
-		r0 = rf(db, run, trrs, saveSuccessfulTaskRuns)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // GetAllRuns provides a mock function with given fields:
 func (_m *ORM) GetAllRuns() ([]pipeline.Run, error) {
 	ret := _m.Called()
@@ -186,13 +172,13 @@ func (_m *ORM) InsertFinishedRun(db *gorm.DB, run pipeline.Run, trrs []pipeline.
 	return r0, r1
 }
 
-// StoreSuspendedRun provides a mock function with given fields: db, runID, trrs
-func (_m *ORM) StoreSuspendedRun(db *gorm.DB, runID int64, trrs []pipeline.TaskRunResult) error {
-	ret := _m.Called(db, runID, trrs)
+// StoreRun provides a mock function with given fields: db, run, trrs, saveSuccessfulTaskRuns
+func (_m *ORM) StoreRun(db *gorm.DB, run *pipeline.Run, trrs []pipeline.TaskRunResult, saveSuccessfulTaskRuns bool) error {
+	ret := _m.Called(db, run, trrs, saveSuccessfulTaskRuns)
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(*gorm.DB, int64, []pipeline.TaskRunResult) error); ok {
-		r0 = rf(db, runID, trrs)
+	if rf, ok := ret.Get(0).(func(*gorm.DB, *pipeline.Run, []pipeline.TaskRunResult, bool) error); ok {
+		r0 = rf(db, run, trrs, saveSuccessfulTaskRuns)
 	} else {
 		r0 = ret.Error(0)
 	}
